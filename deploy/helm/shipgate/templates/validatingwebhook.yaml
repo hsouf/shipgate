@@ -1,0 +1,39 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ .Release.Name }}
+  {{- with .Values.certManager.issuer }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ $.Release.Namespace }}/{{ $.Release.Name }}-tls
+  {{- end }}
+webhooks:
+  - name: verify.shipgate.dev
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    timeoutSeconds: 10
+    # Audit mode must never block the cluster if shipgate is down.
+    # In enforce mode, fail closed. TODO(#16): document break-glass first.
+    failurePolicy: {{ if .Values.enforce }}Fail{{ else }}Ignore{{ end }}
+    clientConfig:
+      service:
+        name: {{ .Release.Name }}
+        namespace: {{ .Release.Namespace }}
+        path: /validate
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: {{- toYaml .Values.excludedNamespaces | nindent 12 }}
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["jobs", "cronjobs"]

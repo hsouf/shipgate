@@ -1,0 +1,5 @@
+/bin/
+/dist/
+*.attestation
+*.prof
+.DS_Store

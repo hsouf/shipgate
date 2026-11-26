@@ -1,0 +1,21 @@
+image:
+  repository: ghcr.io/hsouf/shipgate   # TODO(#1): publish image
+  digest: ""                               # always deploy shipgate itself by digest
+  pullPolicy: IfNotPresent
+
+# Audit mode admits everything and logs would-deny decisions. Flip only after
+# reviewing a couple of weeks of audit events.
+enforce: false
+
+# cert-manager issuer used to mint the webhook serving cert (TODO #16).
+certManager:
+  issuer: ""
+
+# Namespaces never sent to the webhook (avoid locking yourself out).
+excludedNamespaces:
+  - kube-system
+  - shipgate-system
+
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits: { memory: 256Mi }

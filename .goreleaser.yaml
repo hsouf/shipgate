@@ -1,0 +1,18 @@
+# TODO(#1): add cosign signing and SLSA provenance generation for releases.
+version: 2
+builds:
+  - id: shipgate
+    main: ./cmd/shipgate
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X github.com/hsouf/shipgate/internal/version.Version={{.Version}}
+      - -X github.com/hsouf/shipgate/internal/version.Commit={{.Commit}}
+      - -X github.com/hsouf/shipgate/internal/version.Date={{.Date}}
+archives:
+  - formats: [tar.gz]
+checksum:
+  name_template: checksums.txt

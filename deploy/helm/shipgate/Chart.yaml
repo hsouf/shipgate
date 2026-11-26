@@ -1,0 +1,6 @@
+apiVersion: v2
+name: shipgate
+description: Deploy gate admission webhook — hardware-signed, independently verified deploys
+type: application
+version: 0.0.1
+appVersion: "dev"

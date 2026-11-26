@@ -1,0 +1,34 @@
+# shipgate default policy pack — DRAFT. Schema is not final (#9).
+# `shipgate init` (#8) translates this into gittuf root + targets policy.
+version: 0
+
+root:
+  # Changing the trust root or this policy needs this many root signatures.
+  threshold: 2
+  holders: []          # e.g. [alice, bob, carol] — enrolled security leads
+
+teams:
+  security: []         # enrolled person IDs
+
+rules:
+  - name: protect-main
+    refs: ["refs/heads/main"]
+    # Author + one distinct approver, both with enrolled hardware keys.
+    min_distinct_signers: 2
+    require_user_presence: true
+    require_user_verification: true
+
+  - name: protect-pipelines
+    paths: [".github/workflows/**", "deploy/**", "Dockerfile*"]
+    min_distinct_signers: 2
+    require_team: security
+
+  - name: protect-policy
+    refs: ["refs/gittuf/policy"]
+    threshold_from: root
+
+deploy:
+  protected_refs: ["refs/heads/main"]
+  trusted_builders: []   # SLSA builder identities allowed to produce deployable images
+  mirror_max_staleness: 10m
+  on_stale_mirror: deny  # deny | allow (fail-open is not recommended)
