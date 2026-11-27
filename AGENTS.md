@@ -33,7 +33,12 @@ docs/issues.md; issue numbers (#N) in code TODOs refer to it.
 - internal/enroll — sk key generation + git config (implemented, #5)
 - internal/webhook — AdmissionReview handler with audit/enforce modes
 - internal/audit — structured JSON decision events
-- internal/policy, internal/approve, internal/merge — package docs only, to implement
+- internal/approve, internal/merge — approve/merge flows (#10-#12), built on
+  internal/change (pins the exact change, reads and verifies approvals)
+- internal/gitx — git plumbing; internal/sshsig — SSH signature parsing and
+  touch/PIN flag checks
+- internal/change/changetest — test-only fakes (git repos, signatures, gittuf)
+- internal/policy — package docs only, to implement
 - policies/default — draft policy pack (schema not final, #9)
 - deploy/helm/shipgate — webhook chart skeleton (#16)
 - test/e2e — "stolen token" demo plan (#18)

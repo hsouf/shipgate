@@ -11,9 +11,14 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hsouf/shipgate/internal/approve"
 	"github.com/hsouf/shipgate/internal/audit"
+	"github.com/hsouf/shipgate/internal/change"
 	"github.com/hsouf/shipgate/internal/enroll"
 	"github.com/hsouf/shipgate/internal/gate"
+	"github.com/hsouf/shipgate/internal/gittufx"
+	"github.com/hsouf/shipgate/internal/gitx"
+	"github.com/hsouf/shipgate/internal/merge"
 	"github.com/hsouf/shipgate/internal/version"
 	"github.com/hsouf/shipgate/internal/webhook"
 )
@@ -29,8 +34,8 @@ var commands = map[string]command{
 	"version":       {"Print version information", runVersion},
 	"enroll":        {"Generate a hardware-backed signing key and configure git (#5-#7)", runEnroll},
 	"init":          {"Bootstrap gittuf root of trust and the default policy pack (#8, #9)", notImplemented("#8")},
-	"approve":       {"Hardware-signed approval bound to the exact tree (#10, #11)", notImplemented("#10")},
-	"merge":         {"Merge locally, sign, record RSL entry and push (#12)", notImplemented("#12")},
+	"approve":       {"Hardware-signed approval bound to the exact tree (#10, #11)", runApprove},
+	"merge":         {"Merge locally, sign, record RSL entry and push (#12)", runMerge},
 	"verify":        {"Decide whether an image may be deployed (#13-#15)", runVerify},
 	"webhook-serve": {"Serve the Kubernetes admission webhook, audit-only by default (#16, #17)", runWebhookServe},
 }
@@ -87,6 +92,62 @@ func runEnroll(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 	opts.Out = stdout
 	return enroll.Run(ctx, opts)
+}
+
+// branchCommand parses "<branch> [--into main] [--remote origin]", with flags
+// accepted before or after the branch.
+func branchCommand(name string, args []string, stdout, stderr io.Writer) (branch, into string, env change.Env, err error) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, "Usage: shipgate %s [flags] <branch>\n\nFlags:\n", name)
+		fs.PrintDefaults()
+	}
+	intoFlag := fs.String("into", "main", "protected branch the change merges into")
+	remote := fs.String("remote", "origin", "git remote to sync with and push to")
+	if err := fs.Parse(args); err != nil {
+		return "", "", env, errUsage
+	}
+	rest := fs.Args()
+	if len(rest) > 0 {
+		branch = rest[0]
+		if err := fs.Parse(rest[1:]); err != nil {
+			return "", "", env, errUsage
+		}
+		rest = fs.Args()
+	}
+	if branch == "" || len(rest) > 0 {
+		fs.Usage()
+		return "", "", env, errUsage
+	}
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", "", env, err
+	}
+	env = change.Env{
+		Git:      &gitx.Repo{Dir: dir, Stderr: stderr},
+		Gittuf:   &gittufx.CLI{Dir: dir, Stderr: stderr},
+		Verifier: change.HardwareVerifier{},
+		Remote:   *remote,
+		Out:      stdout,
+	}
+	return branch, *intoFlag, env, nil
+}
+
+func runApprove(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	branch, into, env, err := branchCommand("approve", args, stdout, stderr)
+	if err != nil {
+		return err
+	}
+	return approve.Run(ctx, approve.Options{Feature: branch, Target: into, Env: env})
+}
+
+func runMerge(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	branch, into, env, err := branchCommand("merge", args, stdout, stderr)
+	if err != nil {
+		return err
+	}
+	return merge.Run(ctx, merge.Options{Feature: branch, Target: into, Env: env})
 }
 
 func runVerify(ctx context.Context, args []string, stdout, stderr io.Writer) error {
