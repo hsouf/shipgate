@@ -9,9 +9,11 @@ change was signed with a **physical security key**, approved by a **second
 enrolled person**, and verified at deploy time against a policy that lives
 **outside the code forge**.
 
-> Status: **pre-alpha scaffold.** The CLI, gate pipeline and admission webhook
-> skeleton exist and fail closed. Most verification steps are not implemented
-> yet. See [docs/issues.md](docs/issues.md) for the v0.1 plan.
+> Status: **pre-alpha.** The full path is implemented: `approve`, `merge`,
+> image provenance, repo mirror and deploy-time verification. It has not yet
+> been run end to end with real hardware keys and a real cluster, so keep the
+> webhook in audit mode. Everything fails closed. See
+> [docs/issues.md](docs/issues.md) for the v0.1 plan.
 
 ## Why
 
@@ -96,7 +98,10 @@ See [docs/threat-model.md](docs/threat-model.md).
 make build
 ./bin/shipgate                                   # list commands
 ./bin/shipgate enroll --dry-run --comment you@example.com
-./bin/shipgate verify --image registry.example/app@sha256:...   # denies until #13-#15 land
+# is this commit on main, merged with shipgate approve + merge?
+./bin/shipgate verify --repo github.com/acme/app --commit <full sha>
+# image built by GitHub Actions with actions/attest-build-provenance
+./bin/shipgate verify --repo github.com/acme/app --image ghcr.io/acme/app@sha256:...
 ```
 
 ## Roadmap

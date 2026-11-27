@@ -19,7 +19,8 @@ docs/issues.md; issue numbers (#N) in code TODOs refer to it.
 4. **Keyless/OIDC signatures are not authorship.** They bind to the login that
    the threat model assumes is stolen. Authorship requires an enrolled sk key.
 5. **Every deny has a reason** a human can act on (gate.Decision.Reason).
-6. **Small dependency tree.** v0.1 core uses the standard library only. Adding
+6. **Small dependency tree.** v0.1 core uses the standard library only;
+   provenance uses sigstore-go and go-containerregistry. Adding
    a dependency (gittuf, sigstore-go, etc.) is fine when an issue needs it;
    say why in the PR. Avoid pulling in k8s.io/* for the webhook unless needed.
 7. **Never weaken a default or a test to make something pass.** If a security
@@ -30,6 +31,11 @@ docs/issues.md; issue numbers (#N) in code TODOs refer to it.
 - internal/gate — the decision pipeline (provenance -> mirror -> policy)
 - internal/provenance, internal/mirror, internal/gittufx — pipeline step
   interfaces, each with a NotImplemented default that denies
+- internal/mirror — git mirror with append-only gittuf refs, staleness (#14)
+- internal/provenance — Sigstore build provenance: image -> repo + commit
+  from the Fulcio certificate, builder policy (#13)
+- internal/rslcheck — deploy-time verifier: RSL entry, verify-ref, touch +
+  PIN on commits and approvals (#15)
 - internal/enroll — sk key generation + git config (implemented, #5)
 - internal/webhook — AdmissionReview handler with audit/enforce modes
 - internal/audit — structured JSON decision events
@@ -45,8 +51,9 @@ docs/issues.md; issue numbers (#N) in code TODOs refer to it.
 
 ## Working on it
 - `make test` (go vet + go test), `make build` -> bin/shipgate, `make fmt`.
-- go.mod targets Go 1.22. gittuf and sigstore-go may require a newer Go;
-  bump go.mod when you add them.
+- go.mod targets Go 1.27 (required by sigstore-go). Dependencies beyond the
+  standard library: sigstore-go and go-containerregistry, used only by
+  internal/provenance (#13). gittuf is used through its CLI, not as a module.
 - Module path is github.com/hsouf/shipgate.
 - Use fakes (see internal/gate/gate_test.go) to test pipeline logic. Every new
   step needs at least one test proving a deny path.

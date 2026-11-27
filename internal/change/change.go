@@ -149,20 +149,32 @@ func matchRemote(ctx context.Context, g *gitx.Repo, ref, remoteRef string) error
 // signature. Any unsigned commit, or one not signed with touch + PIN on a
 // security key, is an error.
 func Inspect(ctx context.Context, env Env, targetRef, featureRef string) (*Change, error) {
-	c := &Change{TargetRef: targetRef, FeatureRef: featureRef}
-	var err error
-	if c.Base, err = env.Git.ResolveRef(ctx, targetRef); err != nil {
+	base, err := env.Git.ResolveRef(ctx, targetRef)
+	if err != nil {
 		return nil, err
 	}
-	if c.Tip, err = env.Git.ResolveRef(ctx, featureRef); err != nil {
+	tip, err := env.Git.ResolveRef(ctx, featureRef)
+	if err != nil {
 		return nil, err
 	}
+	c, err := InspectRange(ctx, env, targetRef, base, tip)
+	if err != nil {
+		return nil, err
+	}
+	c.FeatureRef = featureRef
+	return c, nil
+}
+
+// InspectRange is Inspect for explicit commits: the change that moves
+// targetRef from base to the merge of tip.
+func InspectRange(ctx context.Context, env Env, targetRef, base, tip string) (*Change, error) {
+	c := &Change{TargetRef: targetRef, Base: base, Tip: tip}
 	ids, err := env.Git.RevList(ctx, c.Base, c.Tip)
 	if err != nil {
 		return nil, err
 	}
 	if len(ids) == 0 {
-		return nil, fmt.Errorf("nothing to merge: %s is already in %s", featureRef, targetRef)
+		return nil, fmt.Errorf("nothing to merge: %.12s is already in %s", tip, targetRef)
 	}
 	if c.Tree, err = env.Git.MergeTree(ctx, c.Base, c.Tip); err != nil {
 		return nil, err

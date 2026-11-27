@@ -24,12 +24,47 @@ spec:
             {{- if .Values.enforce }}
             - --enforce
             {{- end }}
+            - --mirror-dir=/var/lib/shipgate/mirrors
+            - --mirror-max-staleness={{ .Values.mirror.maxStaleness }}
+            - --mirror-refresh={{ .Values.mirror.refresh }}
+            - --protected-ref={{ join "," .Values.protectedRefs }}
+            {{- if .Values.mirror.allowStale }}
+            - --allow-stale-mirror
+            {{- end }}
+            {{- range .Values.repos }}
+            - --repo={{ . }}
+            {{- end }}
+            - --sigstore-cache-dir=/tmp/sigstore
+            - --builder-triggers={{ join "," .Values.provenance.triggers }}
+            {{- range .Values.provenance.signers }}
+            - --builder-signer={{ . }}
+            {{- end }}
+            {{- if .Values.provenance.allowSelfHostedRunners }}
+            - --allow-self-hosted-runners
+            {{- end }}
+            {{- with .Values.provenance.trustedRootFile }}
+            - --sigstore-trusted-root={{ . }}
+            {{- end }}
+            {{- if .Values.provenance.noTransparencyLog }}
+            - --sigstore-no-tlog
+            {{- end }}
+          env:
+            # git needs a writable HOME; the root filesystem is read-only.
+            - { name: HOME, value: /tmp }
           ports: [{ containerPort: 8443, name: https }]
           readinessProbe:
             httpGet: { path: /healthz, port: https, scheme: HTTPS }
           securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
           resources: {{- toYaml .Values.resources | nindent 12 }}
-          volumeMounts: [{ name: tls, mountPath: /tls, readOnly: true }]
+          volumeMounts:
+            - { name: tls, mountPath: /tls, readOnly: true }
+            - { name: mirrors, mountPath: /var/lib/shipgate/mirrors }
+            # git and ssh-keygen write temp files.
+            - { name: tmp, mountPath: /tmp }
       volumes:
         - name: tls
           secret: { secretName: {{ .Release.Name }}-tls }
+        - name: mirrors
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/hsouf/shipgate/internal/approve"
 	"github.com/hsouf/shipgate/internal/audit"
@@ -19,6 +22,9 @@ import (
 	"github.com/hsouf/shipgate/internal/gittufx"
 	"github.com/hsouf/shipgate/internal/gitx"
 	"github.com/hsouf/shipgate/internal/merge"
+	"github.com/hsouf/shipgate/internal/mirror"
+	"github.com/hsouf/shipgate/internal/provenance"
+	"github.com/hsouf/shipgate/internal/rslcheck"
 	"github.com/hsouf/shipgate/internal/version"
 	"github.com/hsouf/shipgate/internal/webhook"
 )
@@ -150,18 +156,180 @@ func runMerge(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	return merge.Run(ctx, merge.Options{Feature: branch, Target: into, Env: env})
 }
 
+// gateFlags are the deploy-gate settings shared by verify and webhook-serve.
+type gateFlags struct {
+	repos         repoList
+	mirrorDir     string
+	protectedRefs string
+	maxStaleness  time.Duration
+	refresh       time.Duration
+	allowStale    bool
+	gittuf        string
+
+	// provenance (#13)
+	bundles       stringList
+	trustedRoot   string
+	sigstoreCache string
+	noTlog        bool
+	issuers       stringList
+	triggers      string
+	signers       stringList
+	selfHosted    bool
+}
+
+func (g *gateFlags) register(fs *flag.FlagSet) {
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		cache = os.TempDir()
+	}
+	fs.Var(&g.repos, "repo", "source repository to trust, as ID or ID=URL (e.g. github.com/acme/app); repeatable")
+	fs.StringVar(&g.mirrorDir, "mirror-dir", filepath.Join(cache, "shipgate", "mirrors"), "directory for repository mirrors")
+	fs.StringVar(&g.protectedRefs, "protected-ref", "refs/heads/main", "comma-separated refs a deployable commit must be verified on")
+	fs.DurationVar(&g.maxStaleness, "mirror-max-staleness", 10*time.Minute, "deny when the last good mirror sync is older than this")
+	fs.DurationVar(&g.refresh, "mirror-refresh", 30*time.Second, "minimum time between mirror fetches")
+	fs.BoolVar(&g.allowStale, "allow-stale-mirror", false, "keep using a stale mirror when the forge is unreachable (not recommended)")
+	fs.StringVar(&g.gittuf, "gittuf", "", "path to the gittuf binary (default: look up in PATH)")
+
+	fs.StringVar(&g.trustedRoot, "sigstore-trusted-root", "", "Sigstore trusted_root.json (default: public-good instance via TUF)")
+	fs.StringVar(&g.sigstoreCache, "sigstore-cache-dir", filepath.Join(cache, "shipgate", "sigstore"), "cache for the Sigstore TUF metadata")
+	fs.BoolVar(&g.noTlog, "sigstore-no-tlog", false, "accept bundles without transparency log entries (private Sigstore instances, e.g. GitHub private repos)")
+	fs.Var(&g.issuers, "builder-issuer", "trusted CI OIDC issuer; repeatable (default: GitHub Actions)")
+	fs.StringVar(&g.triggers, "builder-triggers", strings.Join(provenance.DefaultTriggers, ","), "comma-separated CI events allowed to build deployable images")
+	fs.Var(&g.signers, "builder-signer", "regexp for an extra allowed signing workflow (e.g. a reusable workflow in another repo); repeatable")
+	fs.BoolVar(&g.selfHosted, "allow-self-hosted-runners", false, "accept builds from self-hosted CI runners")
+}
+
+func (g *gateFlags) provenance() (provenance.Verifier, error) {
+	trusted := provenance.PublicGoodTrustedRoot(g.sigstoreCache)
+	if g.trustedRoot != "" {
+		trusted = provenance.TrustedRootFromFile(g.trustedRoot)
+	}
+	pol := provenance.Policy{Repos: map[string]bool{}, Issuers: g.issuers, AllowSelfHostedRunners: g.selfHosted}
+	for id := range g.repos {
+		pol.Repos[id] = true
+	}
+	for _, t := range strings.Split(g.triggers, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			pol.Triggers = append(pol.Triggers, t)
+		}
+	}
+	for _, expr := range g.signers {
+		re, err := regexp.Compile(expr)
+		if err != nil {
+			return nil, fmt.Errorf("--builder-signer %q: %w", expr, err)
+		}
+		pol.Signers = append(pol.Signers, re)
+	}
+	var src provenance.BundleSource = provenance.Registry{}
+	if len(g.bundles) > 0 {
+		src = provenance.Files(g.bundles)
+	}
+	return &provenance.Sigstore{
+		Source:  src,
+		Bundles: &provenance.SigstoreBundles{Trusted: trusted, Issuers: g.issuers, NoTransparencyLog: g.noTlog},
+		Policy:  pol,
+	}, nil
+}
+
+// stringList is a repeatable string flag.
+type stringList []string
+
+func (l *stringList) String() string     { return strings.Join(*l, ",") }
+func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }
+
+// config builds the gate configuration. Without --repo the mirror is not
+// configured and every request is denied.
+func (g *gateFlags) config() (gate.Config, *mirror.Git, error) {
+	cfg := gate.Config{
+		Policy: &rslcheck.Verifier{
+			Gittuf:     rslcheck.GittufCLI{Bin: g.gittuf},
+			Signatures: change.HardwareVerifier{},
+		},
+	}
+	for _, r := range strings.Split(g.protectedRefs, ",") {
+		if r = strings.TrimSpace(r); r != "" {
+			cfg.ProtectedRefs = append(cfg.ProtectedRefs, r)
+		}
+	}
+	if len(g.repos) == 0 {
+		return cfg, nil, nil
+	}
+	prov, err := g.provenance()
+	if err != nil {
+		return cfg, nil, err
+	}
+	cfg.Provenance = prov
+	m, err := mirror.New(mirror.Config{
+		Root:            g.mirrorDir,
+		Repos:           map[string]string(g.repos),
+		RefreshInterval: g.refresh,
+		MaxStaleness:    g.maxStaleness,
+		AllowStale:      g.allowStale,
+	})
+	if err != nil {
+		return cfg, nil, err
+	}
+	cfg.Mirror = m
+	return cfg, m, nil
+}
+
+// repoList parses repeated --repo ID[=URL] flags. Without a URL, ID is
+// cloned over HTTPS (https://ID.git).
+type repoList map[string]string
+
+func (r *repoList) String() string { return fmt.Sprint(map[string]string(*r)) }
+
+func (r *repoList) Set(v string) error {
+	id, url, hasURL := strings.Cut(v, "=")
+	id = strings.TrimSuffix(strings.TrimSpace(id), ".git")
+	if id == "" || strings.Contains(id, "://") {
+		return fmt.Errorf("invalid repo %q: want ID or ID=URL, e.g. github.com/acme/app", v)
+	}
+	if !hasURL {
+		url = "https://" + id + ".git"
+	}
+	if *r == nil {
+		*r = repoList{}
+	}
+	(*r)[id] = url
+	return nil
+}
+
 func runVerify(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	image := fs.String("image", "", "image reference pinned by digest (repo@sha256:...)")
+	commit := fs.String("commit", "", "verify a source commit (full SHA) instead of an image; requires exactly one --repo")
+	var gf gateFlags
+	gf.register(fs)
+	fs.Var(&gf.bundles, "provenance-bundle", "read provenance from this Sigstore bundle file instead of the registry; repeatable")
 	if err := fs.Parse(args); err != nil {
 		return errUsage
 	}
-	if strings.TrimSpace(*image) == "" {
-		fmt.Fprintln(stderr, "--image is required")
+	hasImage, hasCommit := strings.TrimSpace(*image) != "", strings.TrimSpace(*commit) != ""
+	if hasImage == hasCommit {
+		fmt.Fprintln(stderr, "pass either --image, or --commit with --repo")
 		return errUsage
 	}
-	d := gate.NewVerifier(gate.Config{}).Verify(ctx, gate.Request{Image: *image})
+	if hasCommit && len(gf.repos) != 1 {
+		fmt.Fprintln(stderr, "--commit needs exactly one --repo")
+		return errUsage
+	}
+	cfg, _, err := gf.config()
+	if err != nil {
+		return err
+	}
+	v := gate.NewVerifier(cfg)
+	var d gate.Decision
+	if hasCommit {
+		var repo string
+		for id := range gf.repos {
+			repo = id
+		}
+		d = v.VerifyCommit(ctx, repo, strings.TrimSpace(*commit))
+	} else {
+		d = v.Verify(ctx, gate.Request{Image: *image})
+	}
 	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(d); err != nil {
@@ -181,9 +349,25 @@ func runWebhookServe(ctx context.Context, args []string, _, stderr io.Writer) er
 	fs.StringVar(&cfg.TLSCertFile, "tls-cert", "", "TLS certificate file (required by Kubernetes)")
 	fs.StringVar(&cfg.TLSKeyFile, "tls-key", "", "TLS key file")
 	fs.BoolVar(&cfg.Enforce, "enforce", false, "deny requests that fail verification (default: audit only)")
+	var gf gateFlags
+	gf.register(fs)
 	if err := fs.Parse(args); err != nil {
 		return errUsage
 	}
-	srv := webhook.NewServer(cfg, gate.NewVerifier(gate.Config{}), audit.NewLogger(stderr))
+	gcfg, m, err := gf.config()
+	if err != nil {
+		return err
+	}
+	logger := audit.NewLogger(stderr)
+	if m != nil {
+		// Refresh twice per interval so request-time syncs find a fresh
+		// mirror and don't wait on the network.
+		go m.Refresh(ctx, gf.refresh/2, func(repo string, err error) {
+			fmt.Fprintf(stderr, "shipgate: mirror sync %s: %v\n", repo, err)
+		})
+	} else {
+		fmt.Fprintln(stderr, "shipgate: no --repo configured; every image will be denied")
+	}
+	srv := webhook.NewServer(cfg, gate.NewVerifier(gcfg), logger)
 	return srv.ListenAndServe(ctx)
 }

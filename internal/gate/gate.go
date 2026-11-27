@@ -92,17 +92,31 @@ func (v *Verifier) Verify(ctx context.Context, req Request) Decision {
 	if err != nil {
 		return d.deny("provenance", err.Error())
 	}
-	d.SourceRepo, d.Commit = src.Repo, src.Commit
 	d.pass("provenance", "builder "+src.Builder)
+	return v.verifySource(ctx, d, src.Repo, src.Commit)
+}
 
-	repoPath, err := v.cfg.Mirror.Sync(ctx, src.Repo)
+// VerifyCommit evaluates a source commit directly, skipping provenance. Use
+// it where the commit is already known to be what gets deployed, e.g. a CD
+// pipeline step. Admission control must use Verify, which ties the image to
+// its commit.
+func (v *Verifier) VerifyCommit(ctx context.Context, repo, commit string) Decision {
+	if !isFullSHA(commit) {
+		return Decision{SourceRepo: repo, Commit: commit}.deny("commit", "commit must be a full 40-character SHA")
+	}
+	return v.verifySource(ctx, Decision{}, repo, commit)
+}
+
+func (v *Verifier) verifySource(ctx context.Context, d Decision, repo, commit string) Decision {
+	d.SourceRepo, d.Commit = repo, commit
+	repoPath, err := v.cfg.Mirror.Sync(ctx, repo)
 	if err != nil {
 		return d.deny("mirror", err.Error())
 	}
 	d.pass("mirror", repoPath)
 
 	for _, ref := range v.cfg.ProtectedRefs {
-		ok, err := v.cfg.Policy.CommitVerifiedOnRef(ctx, repoPath, ref, src.Commit)
+		ok, err := v.cfg.Policy.CommitVerifiedOnRef(ctx, repoPath, ref, commit)
 		if err != nil {
 			return d.deny("policy", err.Error())
 		}
@@ -113,7 +127,19 @@ func (v *Verifier) Verify(ctx context.Context, req Request) Decision {
 			return d
 		}
 	}
-	return d.deny("policy", "commit is not a verified RSL entry on any protected ref")
+	return d.deny("policy", "commit is not a verified RSL entry on any protected ref (pushed without shipgate merge?)")
+}
+
+func isFullSHA(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			return false
+		}
+	}
+	return true
 }
 
 func (d *Decision) pass(name, detail string) {

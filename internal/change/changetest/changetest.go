@@ -384,3 +384,31 @@ func (e *Env) WriteApprovalClaiming(target, base, pathTree, claimedTree string, 
 	e.T.Helper()
 	e.writeApproval(target, base, pathTree, claimedTree, signers...)
 }
+
+// RecordRSL appends a gittuf-format RSL reference entry for ref -> target,
+// signed by signer (zero Person = unsigned), and returns the entry ID.
+func (e *Env) RecordRSL(signer Person, ref, target string) string {
+	e.T.Helper()
+	return e.appendRSLEntry(signer, fmt.Sprintf("RSL Reference Entry\n\nref: %s\ntargetID: %s\n", ref, target))
+}
+
+// SkipRSL appends an annotation entry that marks entryIDs as skipped.
+func (e *Env) SkipRSL(signer Person, entryIDs ...string) string {
+	e.T.Helper()
+	msg := "RSL Annotation Entry\n\n"
+	for _, id := range entryIDs {
+		msg += "entryID: " + id + "\n"
+	}
+	return e.appendRSLEntry(signer, msg+"skip: true\n")
+}
+
+func (e *Env) appendRSLEntry(signer Person, msg string) string {
+	prev := e.Run("for-each-ref", "--format=%(objectname)", gittufx.RSLRef)
+	var parents []string
+	if prev != "" {
+		parents = []string{prev}
+	}
+	c := e.CommitTree(signer, e.Tree("", nil), parents, msg)
+	e.Run("update-ref", gittufx.RSLRef, c)
+	return c
+}

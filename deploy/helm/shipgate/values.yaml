@@ -7,6 +7,36 @@ image:
 # reviewing a couple of weeks of audit events.
 enforce: false
 
+# Source repositories whose commits may be deployed, as ID or ID=URL.
+# Private repos need read credentials for git in the pod (TODO #16).
+repos: []
+#  - github.com/acme/app
+
+# Refs a deployable commit must have been merged into with shipgate merge.
+protectedRefs: ["refs/heads/main"]
+
+mirror:
+  maxStaleness: 10m
+  refresh: 30s
+  # Keep serving a stale mirror when the forge is down. A stale mirror can
+  # miss a key revocation; leave false unless you accept that.
+  allowStale: false
+
+# Which CI builds are trusted to produce deployable images (#13). Images
+# need Sigstore build provenance in the registry, e.g. from
+# actions/attest-build-provenance with push-to-registry: true.
+provenance:
+  # CI events allowed to build deployable images.
+  triggers: ["push", "workflow_dispatch", "release", "schedule"]
+  # Extra signing workflows outside the source repo (regexps), e.g. the SLSA
+  # generator. Workflows in the source repo itself are always allowed.
+  signers: []
+  allowSelfHostedRunners: false
+  # For GitHub private repos (GitHub's Sigstore instance): mount its trusted
+  # root and disable the transparency-log requirement.
+  trustedRootFile: ""
+  noTransparencyLog: false
+
 # cert-manager issuer used to mint the webhook serving cert (TODO #16).
 certManager:
   issuer: ""

@@ -3,6 +3,7 @@ package gate
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/hsouf/shipgate/internal/provenance"
@@ -72,5 +73,23 @@ func TestPolicyErrorDenied(t *testing.T) {
 	})
 	if d := v.Verify(context.Background(), Request{Image: img}); d.Allowed {
 		t.Fatal("policy errors must fail closed")
+	}
+}
+
+func TestVerifyCommitSkipsProvenanceOnly(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	allow := NewVerifier(Config{Mirror: fakeMirror{}, Policy: fakePolicy{ok: true}})
+	if d := allow.VerifyCommit(context.Background(), "github.com/acme/app", sha); !d.Allowed {
+		t.Fatalf("expected allow, got %+v", d)
+	}
+	deny := NewVerifier(Config{Mirror: fakeMirror{}, Policy: fakePolicy{ok: false}})
+	if d := deny.VerifyCommit(context.Background(), "github.com/acme/app", sha); d.Allowed {
+		t.Fatal("unverified commit allowed")
+	}
+	if d := NewVerifier(Config{}).VerifyCommit(context.Background(), "github.com/acme/app", sha); d.Allowed {
+		t.Fatal("default config must deny")
+	}
+	if d := allow.VerifyCommit(context.Background(), "github.com/acme/app", "main"); d.Allowed {
+		t.Fatal("a branch name must not be accepted as a commit")
 	}
 }
